@@ -1,0 +1,12 @@
+{
+    "endpoints": {
+        "google": {
+            "url": "https://www.google.com",
+            "timeout": 5
+        },
+        "github": {
+            "url": "https://github.com",
+            "timeout": 10
+        }
+    }
+}
