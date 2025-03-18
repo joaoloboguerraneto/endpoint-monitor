@@ -2,7 +2,7 @@ import os
 import json
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 import sys
 import csv
 import requests
@@ -20,37 +20,25 @@ class TestEndpointMonitor(unittest.TestCase):
         # Criar diretório temporário para configuração e dados
         self.temp_dir = tempfile.TemporaryDirectory()
         
-        # Sobrescrever CONFIG_DIR, CONFIG_FILE, e DATA_STORE_FILE
+        # Definir variáveis de ambiente específicas para cada teste
+        config_dir = os.path.join(self.temp_dir.name, 'config')
+        os.makedirs(config_dir, exist_ok=True)
+        
+        self.config_file = os.path.join(config_dir, 'config.json')
+        self.data_store_file = os.path.join(config_dir, 'data-store.csv')
+        
+        # Salvar valores originais para restaurar no tearDown
         self.original_config_dir = os.environ.get('ENDPOINT_MONITOR_CONFIG_DIR')
         self.original_config_file = os.environ.get('ENDPOINT_MONITOR_CONFIG_FILE')
         self.original_data_store_file = os.environ.get('ENDPOINT_MONITOR_DATA_STORE_FILE')
         
-        os.environ['ENDPOINT_MONITOR_CONFIG_DIR'] = self.temp_dir.name
-        os.environ['ENDPOINT_MONITOR_CONFIG_FILE'] = os.path.join(self.temp_dir.name, 'config.json')
-        os.environ['ENDPOINT_MONITOR_DATA_STORE_FILE'] = os.path.join(self.temp_dir.name, 'data-store.csv')
-        
-        # Criar configuração de exemplo
-        self.sample_config = {
-            "endpoints": {
-                "test1": {
-                    "url": "https://google.com",
-                    "timeout": 5
-                },
-                "test2": {
-                    "url": "https://mercedes-benz.io",
-                    "timeout": 10
-                }
-            }
-        }
-        
-        # Garantir que cada teste comece com um arquivo de configuração limpo
-        with open(os.environ['ENDPOINT_MONITOR_CONFIG_FILE'], 'w') as f:
-            json.dump(self.sample_config, f)
-
+        # Configurar valores para os testes
+        os.environ['ENDPOINT_MONITOR_CONFIG_DIR'] = config_dir
+        os.environ['ENDPOINT_MONITOR_CONFIG_FILE'] = self.config_file
+        os.environ['ENDPOINT_MONITOR_DATA_STORE_FILE'] = self.data_store_file
+    
     def tearDown(self):
         """Limpar após os testes"""
-        self.temp_dir.cleanup()
-        
         # Restaurar variáveis de ambiente originais
         if self.original_config_dir:
             os.environ['ENDPOINT_MONITOR_CONFIG_DIR'] = self.original_config_dir
@@ -66,50 +54,74 @@ class TestEndpointMonitor(unittest.TestCase):
             os.environ['ENDPOINT_MONITOR_DATA_STORE_FILE'] = self.original_data_store_file
         else:
             os.environ.pop('ENDPOINT_MONITOR_DATA_STORE_FILE', None)
+        
+        # Remover diretório temporário
+        self.temp_dir.cleanup()
 
     def test_load_config(self):
         """Testar carregamento da configuração"""
-        # Certificar de que o arquivo de configuração está atualizado antes do teste
-        with open(os.environ['ENDPOINT_MONITOR_CONFIG_FILE'], 'w') as f:
-            json.dump(self.sample_config, f)
-            
+        # Definir configuração de exemplo
+        sample_config = {
+            "endpoints": {
+                "test1": {
+                    "url": "https://google.com",
+                    "timeout": 5
+                },
+                "test2": {
+                    "url": "https://mercedes-benz.io",
+                    "timeout": 10
+                }
+            }
+        }
+        
+        # Escrever configuração no arquivo
+        with open(self.config_file, 'w') as f:
+            json.dump(sample_config, f)
+        
+        # Instanciar monitor para carregar configuração
         monitor = EndpointMonitor()
-        self.assertEqual(monitor.config, self.sample_config)
+        
+        # Verificar se a configuração foi carregada corretamente
+        self.assertEqual(monitor.config, sample_config)
 
     def test_add_endpoint(self):
-        """Testar adição de novo endpoint"""
-        # Certificar de que começamos com configuração limpa
-        with open(os.environ['ENDPOINT_MONITOR_CONFIG_FILE'], 'w') as f:
-            json.dump(self.sample_config, f)
-            
+        """Testar adição de um novo endpoint"""
+        # Criar arquivo de configuração vazio
+        with open(self.config_file, 'w') as f:
+            json.dump({"endpoints": {}}, f)
+        
+        # Instanciar monitor
         monitor = EndpointMonitor()
         
-        # Adicionar novo endpoint
-        monitor.add_endpoint("test3", "https://example.net", 15)
+        # Adicionar endpoint
+        monitor.add_endpoint("test1", "https://google.com", 5)
         
-        # Verificar se foi adicionado
-        self.assertIn("test3", monitor.config["endpoints"])
-        self.assertEqual(monitor.config["endpoints"]["test3"]["url"], "https://example.net")
-        self.assertEqual(monitor.config["endpoints"]["test3"]["timeout"], 15)
+        # Verificar se foi adicionado corretamente
+        self.assertIn("test1", monitor.config["endpoints"])
+        self.assertEqual(monitor.config["endpoints"]["test1"]["url"], "https://google.com")
+        self.assertEqual(monitor.config["endpoints"]["test1"]["timeout"], 5)
         
-        # Testar adição de duplicata
+        # Testar adição de endpoint duplicado
         with patch('sys.stdout', new=StringIO()) as fake_out:
-            result = monitor.add_endpoint("test3", "https://example.net", 15)
+            result = monitor.add_endpoint("test1", "https://example.com", 10)
             self.assertFalse(result)
             self.assertIn("already exists", fake_out.getvalue())
 
     @patch('requests.get')
     def test_check_endpoint_success(self, mock_get):
         """Testar verificação de endpoint que está online"""
-        # Simular a resposta
+        # Configurar mock de resposta
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_get.return_value = mock_response
         
+        # Instanciar monitor
         monitor = EndpointMonitor()
+        
+        # Verificar endpoint
         result = monitor._check_endpoint("test1", {"url": "https://mercedes-benz.io", "timeout": 5})
         
-        # Verificar o resultado
+        # Verificar resultado
         self.assertEqual(result["name"], "test1")
         self.assertEqual(result["url"], "https://mercedes-benz.io")
         self.assertEqual(result["status_code"], 200)
@@ -120,14 +132,17 @@ class TestEndpointMonitor(unittest.TestCase):
     @patch('requests.get')
     def test_check_endpoint_failure(self, mock_get):
         """Testar verificação de endpoint que está offline"""
-        # Simular um erro de conexão
+        # Configurar mock para simular erro de conexão
         mock_get.side_effect = requests.exceptions.ConnectionError("Connection refused")
         
+        # Instanciar monitor
         monitor = EndpointMonitor()
-        result = monitor._check_endpoint("test1", {"url": "https://mercedes-benz.io", "timeout": 5})
         
-        # Verificar o resultado
-        self.assertEqual(result["name"], "test1")
+        # Verificar endpoint
+        result = monitor._check_endpoint("test2", {"url": "https://mercedes-benz.io", "timeout": 10})
+        
+        # Verificar resultado
+        self.assertEqual(result["name"], "test2")
         self.assertEqual(result["url"], "https://mercedes-benz.io")
         self.assertIsNone(result["status_code"])
         self.assertFalse(result["is_available"])
@@ -135,58 +150,90 @@ class TestEndpointMonitor(unittest.TestCase):
         self.assertIsNone(result["response_time"])
         self.assertIn("Connection refused", result["error"])
 
-    @patch('endpoint_monitor.EndpointMonitor._check_endpoint')
-    @patch('endpoint_monitor.EndpointMonitor._save_result')
-    def test_fetch(self, mock_save, mock_check):
-        """Testar busca de endpoints"""
-        # Configurar mock para _save_result (para evitar IO real)
-        mock_save.return_value = None
+    def test_fetch(self):
+        """Testar método fetch para buscar status de endpoints"""
+        # Configurar ambiente do teste
+        sample_config = {
+            "endpoints": {
+                "test1": {
+                    "url": "https://google.com",
+                    "timeout": 5
+                },
+                "test2": {
+                    "url": "https://mercedes-benz.io",
+                    "timeout": 10
+                }
+            }
+        }
         
-        # Configurar mock para _check_endpoint
-        def mock_check_side_effect(name, data):
-            if name == "test1":
-                return {
+        # Escrever configuração no arquivo
+        with open(self.config_file, 'w') as f:
+            json.dump(sample_config, f)
+        
+        # Criar mocks para os métodos internos
+        with patch('endpoint_monitor.EndpointMonitor._check_endpoint') as mock_check, \
+             patch('endpoint_monitor.EndpointMonitor._save_result') as mock_save:
+            
+            # Configurar retornos do mock
+            mock_check.side_effect = [
+                {
                     "name": "test1",
                     "url": "https://google.com",
                     "timestamp": "2023-01-01T12:00:00",
                     "status_code": 200,
                     "response_time": 150.5,
                     "is_available": True
-                }
-            elif name == "test2":
-                return {
+                },
+                {
                     "name": "test2",
                     "url": "https://mercedes-benz.io",
                     "timestamp": "2023-01-01T12:00:00",
-                    "status_code": None,
-                    "response_time": None,
-                    "is_available": False,
-                    "error": "Connection refused"
+                    "status_code": 404,
+                    "response_time": 200.3,
+                    "is_available": False
                 }
-        
-        mock_check.side_effect = mock_check_side_effect
-        
-        # Certifique-se de que a configuração está atualizada
-        with open(os.environ['ENDPOINT_MONITOR_CONFIG_FILE'], 'w') as f:
-            json.dump(self.sample_config, f)
-        
-        monitor = EndpointMonitor()
-        
-        # Testar busca de todos os endpoints
-        results = monitor.fetch(output=False)
-        
-        # Verificar resultados
-        self.assertEqual(len(results), 2)
-        
-        # Resetar o mock para o próximo teste
-        mock_check.reset_mock()
-        
-        # Testar busca de endpoints específicos
-        results = monitor.fetch(endpoint_names=["test1"], output=False)
-        self.assertEqual(len(results), 1)
-        mock_check.assert_called_once()
-        args, kwargs = mock_check.call_args
-        self.assertEqual(args[0], "test1")
+            ]
+            
+            # Instanciar monitor
+            monitor = EndpointMonitor()
+            
+            # Executar método fetch
+            results = monitor.fetch(output=False)
+            
+            # Verificar se o método _check_endpoint foi chamado duas vezes (uma para cada endpoint)
+            self.assertEqual(mock_check.call_count, 2)
+            
+            # Verificar se os resultados foram salvos
+            self.assertEqual(mock_save.call_count, 2)
+            
+            # Verificar se o método retornou dois resultados
+            self.assertEqual(len(results), 2)
+            
+            # Reiniciar os mocks para o próximo teste
+            mock_check.reset_mock()
+            mock_save.reset_mock()
+            
+            # Configurar mock para testar busca de endpoint específico
+            mock_check.return_value = {
+                "name": "test1",
+                "url": "https://google.com",
+                "timestamp": "2023-01-01T12:00:00",
+                "status_code": 200,
+                "response_time": 150.5,
+                "is_available": True
+            }
+            
+            # Testar busca de endpoint específico
+            results = monitor.fetch(endpoint_names=["test1"], output=False)
+            
+            # Verificar se _check_endpoint foi chamado apenas uma vez
+            self.assertEqual(mock_check.call_count, 1)
+            
+            # Verificar se recebemos apenas um resultado
+            self.assertEqual(len(results), 1)
+            
+            # Verificar se o método foi chamado com o nome correto
+            mock_check.assert_called_with("test1", {"url": "https://google.com", "timeout": 5})
 
 
 if __name__ == '__main__':
