@@ -33,11 +33,11 @@ class TestEndpointMonitor(unittest.TestCase):
         self.sample_config = {
             "endpoints": {
                 "test1": {
-                    "url": "https://example.com",
+                    "url": "https://google.com",
                     "timeout": 5
                 },
                 "test2": {
-                    "url": "https://example.org",
+                    "url": "https://mercedes-benz.io",
                     "timeout": 10
                 }
             }
