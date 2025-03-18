@@ -123,22 +123,22 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v3
-      
+
     - name: Set up Helm
       uses: azure/setup-helm@v3
       with:
         version: 'latest'
-    
+
     - name: Set AKS Production Context
       uses: azure/aks-set-context@v3
       with:
         resource-group: seu-resource-group-prod
         cluster-name: seu-cluster-aks-prod
-        
+
     - name: Deploy to Production
       run: |
         # Atualiza a tag da imagem para usar o SHA do commit atual
         sed -i "s/tag: latest/tag: ${{ github.sha }}/g" helm/endpoint-monitor/values.yaml
-        
+
         # Instala/atualiza o chart Helm na produção
         helm upgrade --install endpoint-monitor ./helm/endpoint-monitor --set replicaCount=3
