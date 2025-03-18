@@ -7,6 +7,10 @@
         "github": {
             "url": "https://github.com",
             "timeout": 10
+        },
+        "mercedes": {
+            "url": "https://mercedes-benz.io",
+            "timeout": 15
         }
     }
 }
