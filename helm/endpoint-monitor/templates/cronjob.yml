@@ -1,0 +1,35 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-fetch
+  labels:
+    app: {{ .Release.Name }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    release: {{ .Release.Name }}
+spec:
+  schedule: {{ .Values.cronjob.schedule | quote }}
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: {{ .Values.cronjob.activeDeadlineSeconds }}
+      template:
+        spec:
+          containers:
+          - name: {{ .Release.Name }}
+            image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+            command: ["endpoint-monitor", "fetch", "--output"]
+            resources:
+              {{- toYaml .Values.resources | nindent 14 }}
+            volumeMounts:
+            - name: config-volume
+              mountPath: /root/.endpoint-monitor/config.json
+              subPath: config.json
+            - name: data-volume
+              mountPath: /root/.endpoint-monitor
+          volumes:
+          - name: config-volume
+            configMap:
+              name: {{ .Release.Name }}-config
+          - name: data-volume
+            persistentVolumeClaim:
+              claimName: {{ .Release.Name }}-data
+          restartPolicy: OnFailure
