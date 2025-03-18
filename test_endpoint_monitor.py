@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import sys
 import csv
+import requests
 from io import StringIO
 
 # Importe o módulo a ser testado
