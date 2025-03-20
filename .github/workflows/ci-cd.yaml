@@ -96,62 +96,61 @@ jobs:
 
     - name: Wait for pod to be ready
       run: |
-        echo "Waiting for endpoint-monitor pod to be ready..."
+        echo "Waiting for endpoint-monitor pods to appear..."
         
-        # Loop até que o pod esteja pronto ou timeout
         COUNTER=0
         MAX_TRIES=30
         SLEEP_SECONDS=10
 
         while [ $COUNTER -lt $MAX_TRIES ]; do
-          POD_STATUS=$(kubectl get pods -l app.kubernetes.io/name=endpoint-monitor -o jsonpath='{.items[0].status.phase}')
+          POD_COUNT=$(kubectl get pods -l app=endpoint-monitor -o jsonpath='{.items}' | jq '. | length')
 
-          if [ "$POD_STATUS" = "Running" ]; then
-            READY_STATUS=$(kubectl get pods -l app.kubernetes.io/name=endpoint-monitor -o jsonpath='{.items[0].status.containerStatuses[0].ready}')
-
-            if [ "$READY_STATUS" = "true" ]; then
-              echo "Pod is now running and ready!"
-              break
-            fi
+          if [ "$POD_COUNT" -gt "0" ]; then
+            echo "Found endpoint-monitor pods!"
+            kubectl get pods -l app=endpoint-monitor
+            break
           fi
 
-          echo "Pod not ready yet. Status: $POD_STATUS. Waiting $SLEEP_SECONDS seconds..."
+          echo "No endpoint-monitor pods found yet. Waiting $SLEEP_SECONDS seconds..."
           sleep $SLEEP_SECONDS
           COUNTER=$((COUNTER+1))
         done
 
         if [ $COUNTER -eq $MAX_TRIES ]; then
-          echo "Timeout waiting for pod to be ready"
-          kubectl describe pods -l app.kubernetes.io/name=endpoint-monitor
+          echo "Timeout waiting for pods to appear"
+
+          echo "Current pods in all namespaces:"
+          kubectl get pods --all-namespaces
+
+          echo "Current deployments:"
+          kubectl get deployments
+
+          echo "Helm releases:"
+          helm list
+
           exit 1
         fi
-        
+
+        echo "Waiting for pod to become ready..."
+        kubectl wait --for=condition=ready pod -l app=endpoint-monitor --timeout=300s
+
     - name: Verify deployment functionality
       run: |
         echo "Verifying endpoint-monitor functionality..."
         
         # Obtém o nome do pod
-        POD_NAME=$(kubectl get pods -l app.kubernetes.io/name=endpoint-monitor -o jsonpath='{.items[0].metadata.name}')
+        POD_NAME=$(kubectl get pods -l app=endpoint-monitor -o jsonpath='{.items[0].metadata.name}')
 
-        # Configurando port-forward para acessar o serviço (se necessário)
-        # kubectl port-forward pod/$POD_NAME 8080:8080 &
-        # PF_PID=$!
-        # sleep 5  # Aguarda o port-forward estabilizar
-
-        # Executa o comando dentro do pod para verificar funcionalidade
         echo "Running endpoint monitor inside the pod..."
         kubectl exec $POD_NAME -- endpoint-monitor fetch --output
 
-        # Verifica se o comando anterior foi bem-sucedido
         if [ $? -eq 0 ]; then
           echo "Deployment verification successful!"
         else
           echo "Deployment verification failed!"
+          kubectl logs $POD_NAME
           exit 1
         fi
-
-        # Limpa o port-forward se foi usado
-        # kill $PF_PID
 
     - name: Show pod logs
       run: |
