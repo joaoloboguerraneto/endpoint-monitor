@@ -61,7 +61,7 @@ jobs:
         push: true
         tags: ${{ secrets.DOCKER_USERNAME }}/endpoint-monitor:latest,${{ secrets.DOCKER_USERNAME }}/endpoint-monitor:${{ github.sha }}
     
-  # Implantação em ambiente de desenvolvimento (pode ser Minikube ou AKS Dev)
+  # Implantação em ambiente de desenvolvimento (usando Minikube)
   deploy-dev:
     runs-on: ubuntu-latest
     needs: build-push
@@ -76,7 +76,6 @@ jobs:
       with:
         version: 'latest'
     
-    # Opção 1: Deploy para Minikube (para testes)
     - name: Install Minikube
       run: |
         curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
@@ -87,18 +86,6 @@ jobs:
         minikube start --driver=docker
         minikube addons enable storage-provisioner
     
-    # Opção 2: Deploy para AKS (cluster real)
-    # - name: Azure Login
-    #   uses: azure/login@v1
-    #   with:
-    #     creds: ${{ secrets.AZURE_CREDENTIALS }}
-    #
-    # - name: Set AKS Context
-    #   uses: azure/aks-set-context@v3
-    #   with:
-    #     resource-group: seu-resource-group
-    #     cluster-name: seu-cluster-aks
-        
     - name: Deploy using Helm
       run: |
         # Atualiza a tag da imagem para usar o SHA do commit atual
@@ -106,39 +93,68 @@ jobs:
         
         # Instala/atualiza o chart Helm
         helm upgrade --install endpoint-monitor ./helm/endpoint-monitor --set replicaCount=1
-        
-    - name: Verify deployment
+
+    - name: Wait for pod to be ready
       run: |
-        kubectl get pods
-        helm list
-        kubectl get deployment endpoint-monitor
+        echo "Waiting for endpoint-monitor pod to be ready..."
         
-  # Opcional: Implantação em ambiente de produção (com aprovação manual)
-  deploy-prod:
-    runs-on: ubuntu-latest
-    needs: deploy-dev
-    if: github.ref == 'refs/heads/main'
-    environment: production  # Isso requer aprovação manual no GitHub
-    
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v3
+        # Loop até que o pod esteja pronto ou timeout
+        COUNTER=0
+        MAX_TRIES=30
+        SLEEP_SECONDS=10
 
-    - name: Set up Helm
-      uses: azure/setup-helm@v3
-      with:
-        version: 'latest'
+        while [ $COUNTER -lt $MAX_TRIES ]; do
+          POD_STATUS=$(kubectl get pods -l app.kubernetes.io/name=endpoint-monitor -o jsonpath='{.items[0].status.phase}')
 
-    - name: Set AKS Production Context
-      uses: azure/aks-set-context@v3
-      with:
-        resource-group: seu-resource-group-prod
-        cluster-name: seu-cluster-aks-prod
+          if [ "$POD_STATUS" = "Running" ]; then
+            READY_STATUS=$(kubectl get pods -l app.kubernetes.io/name=endpoint-monitor -o jsonpath='{.items[0].status.containerStatuses[0].ready}')
 
-    - name: Deploy to Production
+            if [ "$READY_STATUS" = "true" ]; then
+              echo "Pod is now running and ready!"
+              break
+            fi
+          fi
+
+          echo "Pod not ready yet. Status: $POD_STATUS. Waiting $SLEEP_SECONDS seconds..."
+          sleep $SLEEP_SECONDS
+          COUNTER=$((COUNTER+1))
+        done
+
+        if [ $COUNTER -eq $MAX_TRIES ]; then
+          echo "Timeout waiting for pod to be ready"
+          kubectl describe pods -l app.kubernetes.io/name=endpoint-monitor
+          exit 1
+        fi
+        
+    - name: Verify deployment functionality
       run: |
-        # Atualiza a tag da imagem para usar o SHA do commit atual
-        sed -i "s/tag: latest/tag: ${{ github.sha }}/g" helm/endpoint-monitor/values.yaml
+        echo "Verifying endpoint-monitor functionality..."
+        
+        # Obtém o nome do pod
+        POD_NAME=$(kubectl get pods -l app.kubernetes.io/name=endpoint-monitor -o jsonpath='{.items[0].metadata.name}')
 
-        # Instala/atualiza o chart Helm na produção
-        helm upgrade --install endpoint-monitor ./helm/endpoint-monitor --set replicaCount=3
+        # Configurando port-forward para acessar o serviço (se necessário)
+        # kubectl port-forward pod/$POD_NAME 8080:8080 &
+        # PF_PID=$!
+        # sleep 5  # Aguarda o port-forward estabilizar
+
+        # Executa o comando dentro do pod para verificar funcionalidade
+        echo "Running endpoint monitor inside the pod..."
+        kubectl exec $POD_NAME -- endpoint-monitor fetch --output
+
+        # Verifica se o comando anterior foi bem-sucedido
+        if [ $? -eq 0 ]; then
+          echo "Deployment verification successful!"
+        else
+          echo "Deployment verification failed!"
+          exit 1
+        fi
+
+        # Limpa o port-forward se foi usado
+        # kill $PF_PID
+
+    - name: Show pod logs
+      run: |
+        POD_NAME=$(kubectl get pods -l app.kubernetes.io/name=endpoint-monitor -o jsonpath='{.items[0].metadata.name}')
+        echo "Showing logs from pod $POD_NAME:"
+        kubectl logs $POD_NAME
