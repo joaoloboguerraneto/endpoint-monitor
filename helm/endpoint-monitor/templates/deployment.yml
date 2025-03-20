@@ -22,7 +22,7 @@ spec:
       - name: {{ .Release.Name }}
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
-        command: ["endpoint-monitor", "live", "--interval", "60", "--output"]
+        command: ["python", "/app/endpoint_monitor.py", "live", "--interval", "60", "--output"]
         resources:
           {{- toYaml .Values.resources | nindent 12 }}
         volumeMounts:
