@@ -151,23 +151,23 @@ jobs:
           exit 1
         fi
 
-        - name: Show pod logs
-        run: |
-          # List all pods in the cluster
-          echo "Listing all pods in the cluster:"
-          kubectl get pods --all-namespaces
-          
-          # List only the endpoint-monitor pod
-          echo "Listing only the endpoint-monitor pod:"
-          kubectl get pods -l app=endpoint-monitor -o wide
-          
-          # Get the pod name
-          POD_NAME=$(kubectl get pods -l app=endpoint-monitor -o jsonpath='{.items[0].metadata.name}')
-          
-          # Show detailed information about the pod
-          echo "Detailed information about pod $POD_NAME:"
-          kubectl describe pod $POD_NAME
-          
-          # Show logs from the pod
-          echo "Showing logs from pod $POD_NAME:"
-          kubectl logs $POD_NAME
+    - name: Show pod logs
+      run: |
+        # List all pods in the cluster
+        echo "Listing all pods in the cluster:"
+        kubectl get pods --all-namespaces
+        
+        # List only the endpoint-monitor pod
+        echo "Listing only the endpoint-monitor pod:"
+        kubectl get pods -l app=endpoint-monitor -o wide
+        
+        # Get the pod name
+        POD_NAME=$(kubectl get pods -l app=endpoint-monitor -o jsonpath='{.items[0].metadata.name}')
+        
+        # Show detailed information about the pod
+        echo "Detailed information about pod $POD_NAME:"
+        kubectl describe pod $POD_NAME
+        
+        # Show logs from the pod
+        echo "Showing logs from pod $POD_NAME:"
+        kubectl logs $POD_NAME
