@@ -61,7 +61,7 @@ jobs:
         push: true
         tags: ${{ secrets.DOCKER_USERNAME }}/endpoint-monitor:latest,${{ secrets.DOCKER_USERNAME }}/endpoint-monitor:${{ github.sha }}
     
-  # Implantação em ambiente de desenvolvimento (usando Minikube)
+  # Deployment to development environment (using Minikube)
   deploy-dev:
     runs-on: ubuntu-latest
     needs: build-push
@@ -88,10 +88,10 @@ jobs:
     
     - name: Deploy using Helm
       run: |
-        # Atualiza a tag da imagem para usar o SHA do commit atual
+        # Update the image tag to use the current commit SHA
         sed -i "s/tag: latest/tag: ${{ github.sha }}/g" helm/endpoint-monitor/values.yaml
         
-        # Instala/atualiza o chart Helm
+        # Install/update the Helm chart
         helm upgrade --install endpoint-monitor ./helm/endpoint-monitor --set replicaCount=1
 
     - name: Wait for pod to be ready

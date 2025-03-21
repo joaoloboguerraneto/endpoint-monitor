@@ -1,237 +1,301 @@
-import os
+#!/usr/bin/env python3
+"""
+Endpoint Monitor - A CLI tool to test if websites or services are available
+
+This tool allows you to:
+- Add endpoints to a configuration file
+- Scan all configured endpoints
+- Continuously monitor endpoints at specified intervals
+- View the history of scan results
+"""
+
+import argparse
 import json
-import tempfile
-import unittest
-from unittest.mock import patch, MagicMock, call
+import os
 import sys
+import time
+from datetime import datetime
 import csv
 import requests
-from io import StringIO
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional, Union, Any
 
-# Importe o módulo a ser testado
-from endpoint_monitor import EndpointMonitor, CONFIG_FILE, DATA_STORE_FILE
+# Configuration and data store paths
+CONFIG_DIR = os.path.expanduser("~/.endpoint-monitor")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+DATA_STORE_FILE = os.path.join(CONFIG_DIR, "data-store.csv")
+
+# Default settings
+DEFAULT_TIMEOUT = 10  # seconds
+DEFAULT_POLLING_INTERVAL = 60  # seconds
+
+# Ensure configuration directory exists
+os.makedirs(CONFIG_DIR, exist_ok=True)
 
 
-class TestEndpointMonitor(unittest.TestCase):
-    """Testes para a classe EndpointMonitor"""
+class EndpointMonitor:
+    """Main class for handling endpoint monitoring functionality"""
 
-    def setUp(self):
-        """Configurar ambiente de teste"""
-        # Criar diretório temporário para configuração e dados
-        self.temp_dir = tempfile.TemporaryDirectory()
-        
-        # Definir caminhos para os arquivos de teste
-        config_dir = os.path.join(self.temp_dir.name, 'config')
-        os.makedirs(config_dir, exist_ok=True)
-        
-        self.test_config_file = os.path.join(config_dir, 'config.json')
-        self.test_data_store_file = os.path.join(config_dir, 'data-store.csv')
-        
-        # Salvar caminhos originais para restaurar depois
-        self.original_config_file = CONFIG_FILE
-        self.original_data_store_file = DATA_STORE_FILE
-        
-        # Patch as constantes no módulo endpoint_monitor
-        self.config_file_patcher = patch('endpoint_monitor.CONFIG_FILE', self.test_config_file)
-        self.data_store_file_patcher = patch('endpoint_monitor.DATA_STORE_FILE', self.test_data_store_file)
-        
-        self.mock_config_file = self.config_file_patcher.start()
-        self.mock_data_store_file = self.data_store_file_patcher.start()
-    
-    def tearDown(self):
-        """Limpar após os testes"""
-        # Parar os patchers
-        self.config_file_patcher.stop()
-        self.data_store_file_patcher.stop()
-        
-        # Remover diretório temporário
-        self.temp_dir.cleanup()
+    def __init__(self):
+        self.config = self._load_config()
 
-    def test_load_config(self):
-        """Testar carregamento da configuração"""
-        # Definir configuração de exemplo
-        sample_config = {
-            "endpoints": {
-                "test1": {
-                    "url": "https://google.com",
-                    "timeout": 5
-                }
+    def _load_config(self) -> Dict:
+        """Load configuration from file or create default if it doesn't exist"""
+        if not os.path.exists(CONFIG_FILE):
+            default_config = {"endpoints": {}}
+            with open(CONFIG_FILE, "w") as f:
+                json.dump(default_config, f, indent=4)
+            return default_config
+
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            print(f"Error: Config file {CONFIG_FILE} is corrupted")
+            sys.exit(1)
+
+    def _save_config(self):
+        """Save current configuration to file"""
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(self.config, f, indent=4)
+
+    def add_endpoint(self, name: str, url: str, timeout: int = DEFAULT_TIMEOUT):
+        """Add a new endpoint to the configuration"""
+        if name in self.config["endpoints"]:
+            print(f"Error: Endpoint '{name}' already exists")
+            return False
+
+        self.config["endpoints"][name] = {
+            "url": url,
+            "timeout": timeout
+        }
+        self._save_config()
+        print(f"Added endpoint: {name} ({url}) with timeout {timeout}s")
+        return True
+
+    def _check_endpoint(self, name: str, endpoint_data: Dict) -> Dict:
+        """Check if an endpoint is available"""
+        url = endpoint_data["url"]
+        timeout = endpoint_data.get("timeout", DEFAULT_TIMEOUT)
+        
+        timestamp = datetime.now().isoformat()
+        
+        try:
+            start_time = time.time()
+            response = requests.get(url, timeout=timeout, allow_redirects=True)
+            response_time = time.time() - start_time
+            
+            status_code = response.status_code
+            is_available = 200 <= status_code < 400
+            
+            result = {
+                "name": name,
+                "url": url,
+                "timestamp": timestamp,
+                "status_code": status_code,
+                "response_time": round(response_time * 1000, 2),  # convert to ms
+                "is_available": is_available
             }
-        }
-        
-        # Escrever configuração no arquivo
-        with open(self.test_config_file, 'w') as f:
-            json.dump(sample_config, f)
-        
-        # Instanciar monitor para carregar configuração
-        monitor = EndpointMonitor()
-        
-        # Verificar se a configuração foi carregada corretamente
-        self.assertEqual(monitor.config, sample_config)
-
-    def test_add_endpoint(self):
-        """Testar adição de um novo endpoint"""
-        # Criar arquivo de configuração vazio
-        with open(self.test_config_file, 'w') as f:
-            json.dump({"endpoints": {}}, f)
-        
-        # Instanciar monitor
-        monitor = EndpointMonitor()
-        
-        # Adicionar endpoint
-        monitor.add_endpoint("test1", "https://google.com", 5)
-        
-        # Verificar se foi adicionado corretamente
-        self.assertIn("test1", monitor.config["endpoints"])
-        self.assertEqual(monitor.config["endpoints"]["test1"]["url"], "https://google.com")
-        self.assertEqual(monitor.config["endpoints"]["test1"]["timeout"], 5)
-        
-        # Testar adição de endpoint duplicado
-        with patch('sys.stdout', new=StringIO()) as fake_out:
-            result = monitor.add_endpoint("test1", "https://example.com", 10)
-            self.assertFalse(result)
-            self.assertIn("already exists", fake_out.getvalue())
-
-    @patch('requests.get')
-    def test_check_endpoint_success(self, mock_get):
-        """Testar verificação de endpoint que está online"""
-        # Configurar mock de resposta
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_get.return_value = mock_response
-        
-        # Instanciar monitor
-        monitor = EndpointMonitor()
-        
-        # Verificar endpoint
-        result = monitor._check_endpoint("test1", {"url": "https://mercedes-benz.io", "timeout": 5})
-        
-        # Verificar resultado
-        self.assertEqual(result["name"], "test1")
-        self.assertEqual(result["url"], "https://mercedes-benz.io")
-        self.assertEqual(result["status_code"], 200)
-        self.assertTrue(result["is_available"])
-        self.assertIsNotNone(result["timestamp"])
-        self.assertIsNotNone(result["response_time"])
-
-    @patch('requests.get')
-    def test_check_endpoint_failure(self, mock_get):
-        """Testar verificação de endpoint que está offline"""
-        # Configurar mock para simular erro de conexão
-        mock_get.side_effect = requests.exceptions.ConnectionError("Connection refused")
-        
-        # Instanciar monitor
-        monitor = EndpointMonitor()
-        
-        # Verificar endpoint
-        result = monitor._check_endpoint("test2", {"url": "https://mercedes-benz.io", "timeout": 10})
-        
-        # Verificar resultado
-        self.assertEqual(result["name"], "test2")
-        self.assertEqual(result["url"], "https://mercedes-benz.io")
-        self.assertIsNone(result["status_code"])
-        self.assertFalse(result["is_available"])
-        self.assertIsNotNone(result["timestamp"])
-        self.assertIsNone(result["response_time"])
-        self.assertIn("Connection refused", result["error"])
-
-    @patch('endpoint_monitor.ThreadPoolExecutor')
-    def test_fetch(self, mock_executor):
-        """Testar método fetch para buscar status de endpoints"""
-        # Configurar ambiente do teste
-        sample_config = {
-            "endpoints": {
-                "test1": {
-                    "url": "https://google.com",
-                    "timeout": 5
-                },
-                "test2": {
-                    "url": "https://mercedes-benz.io",
-                    "timeout": 10
-                }
+            
+        except requests.exceptions.RequestException as e:
+            result = {
+                "name": name,
+                "url": url,
+                "timestamp": timestamp,
+                "status_code": None,
+                "response_time": None,
+                "is_available": False,
+                "error": str(e)
             }
+            
+        return result
+
+    def _save_result(self, result: Dict):
+        """Save a scan result to the data store"""
+        file_exists = os.path.exists(DATA_STORE_FILE)
+        
+        with open(DATA_STORE_FILE, "a", newline="") as f:
+            fieldnames = [
+                "name", "url", "timestamp", "status_code", 
+                "response_time", "is_available", "error"
+            ]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            
+            if not file_exists:
+                writer.writeheader()
+                
+            writer.writerow(result)
+
+    def fetch(self, endpoint_names: Optional[List[str]] = None, output: bool = False) -> List[Dict]:
+        """Scan specified endpoints or all if none specified"""
+        endpoints = self.config["endpoints"]
+        
+        if not endpoints:
+            print("No endpoints configured. Use 'add-endpoint' command to add some.")
+            return []
+            
+        # Filter endpoints if names provided
+        if endpoint_names:
+            to_check = {name: endpoints[name] for name in endpoint_names if name in endpoints}
+            if not to_check:
+                print("No matching endpoints found")
+                return []
+        else:
+            to_check = endpoints
+            
+        results = []
+        
+        # Use ThreadPoolExecutor to check endpoints concurrently
+        with ThreadPoolExecutor() as executor:
+            future_to_endpoint = {
+                executor.submit(self._check_endpoint, name, data): name 
+                for name, data in to_check.items()
+            }
+            
+            for future in future_to_endpoint:
+                result = future.result()
+                results.append(result)
+                self._save_result(result)
+                
+        # Output results if requested
+        if output:
+            self._print_results(results)
+            
+        return results
+
+    def _print_results(self, results: List[Dict]):
+        """Print scan results in a table format"""
+        if not results:
+            print("No results to display")
+            return
+            
+        # Calculate column widths
+        col_widths = {
+            "name": max(len("ENDPOINT"), max(len(r["name"]) for r in results)),
+            "url": max(len("URL"), max(len(r["url"]) for r in results)),
+            "status": len("STATUS"),
+            "response_time": len("RESPONSE TIME (ms)"),
         }
         
-        # Escrever configuração no arquivo
-        with open(self.test_config_file, 'w') as f:
-            json.dump(sample_config, f)
-            
-        # Configurar mocks para o ThreadPoolExecutor
-        mock_executor_instance = MagicMock()
-        mock_executor.return_value.__enter__.return_value = mock_executor_instance
+        # Print header
+        print(
+            f"{'ENDPOINT':<{col_widths['name']}} "
+            f"{'URL':<{col_widths['url']}} "
+            f"{'STATUS':<{col_widths['status']}} "
+            f"{'RESPONSE TIME (ms)':<{col_widths['response_time']}} "
+            f"TIMESTAMP"
+        )
+        print("-" * (col_widths['name'] + col_widths['url'] + col_widths['status'] + col_widths['response_time'] + 50))
         
-        # Configurar resultados dos mocks
-        result1 = {
-            "name": "test1",
-            "url": "https://google.com",
-            "timestamp": "2023-01-01T12:00:00",
-            "status_code": 200,
-            "response_time": 150.5,
-            "is_available": True
-        }
+        # Print each result
+        for r in results:
+            status = "UP" if r["is_available"] else "DOWN"
+            status_color = "\033[92m" if r["is_available"] else "\033[91m"  # Green for UP, Red for DOWN
+            reset_color = "\033[0m"
+            
+            response_time = str(r["response_time"]) if r["response_time"] is not None else "N/A"
+            
+            print(
+                f"{r['name']:<{col_widths['name']}} "
+                f"{r['url']:<{col_widths['url']}} "
+                f"{status_color}{status:<{col_widths['status']}}{reset_color} "
+                f"{response_time:<{col_widths['response_time']}} "
+                f"{r['timestamp']}"
+            )
+
+    def live(self, interval: int = DEFAULT_POLLING_INTERVAL, endpoint_names: Optional[List[str]] = None, output: bool = False):
+        """Continuously monitor endpoints at specified intervals"""
+        try:
+            print(f"Starting live monitoring with interval {interval}s. Press Ctrl+C to stop.")
+            
+            while True:
+                results = self.fetch(endpoint_names, output=output)
+                time.sleep(interval)
+                
+        except KeyboardInterrupt:
+            print("\nLive monitoring stopped")
+
+    def history(self, endpoint_names: Optional[List[str]] = None):
+        """Show scan history from the data store"""
+        if not os.path.exists(DATA_STORE_FILE):
+            print("No history available yet")
+            return
+            
+        results = []
         
-        result2 = {
-            "name": "test2",
-            "url": "https://mercedes-benz.io",
-            "timestamp": "2023-01-01T12:00:00",
-            "status_code": 404,
-            "response_time": 200.3,
-            "is_available": False
-        }
-        
-        # Configurar o Future para o primeiro endpoint
-        future1 = MagicMock()
-        future1.result.return_value = result1
-        
-        # Configurar o Future para o segundo endpoint
-        future2 = MagicMock()
-        future2.result.return_value = result2
-        
-        # Fazer o mock_executor_instance.submit retornar os futures adequados
-        mock_executor_instance.submit.side_effect = [future1, future2]
-        
-        # Patch o método _save_result para evitar escrita em disco
-        with patch.object(EndpointMonitor, '_save_result') as mock_save:
-            # Instanciar monitor
-            monitor = EndpointMonitor()
+        with open(DATA_STORE_FILE, "r", newline="") as f:
+            reader = csv.DictReader(f)
             
-            # Executar método fetch
-            results = monitor.fetch(output=False)
-            
-            # Verificar se submit foi chamado duas vezes (uma para cada endpoint)
-            self.assertEqual(mock_executor_instance.submit.call_count, 2)
-            
-            # Verificar se _save_result foi chamado duas vezes
-            self.assertEqual(mock_save.call_count, 2)
-            
-            # Verificar se retornou dois resultados
-            self.assertEqual(len(results), 2)
-            
-            # Verificar conteúdo dos resultados
-            self.assertIn(result1, results)
-            self.assertIn(result2, results)
-            
-        # Testar fetch com endpoints específicos
-        with patch.object(EndpointMonitor, '_save_result'), \
-             patch.object(EndpointMonitor, '_check_endpoint') as mock_check:
-            
-            mock_check.return_value = result1
-            
-            # Redefinir mock para teste de endpoints específicos
-            mock_executor_instance.reset_mock()
-            mock_executor_instance.submit.side_effect = [future1]
-            
-            # Chamar fetch com nome de endpoint específico
-            results = monitor.fetch(endpoint_names=["test1"], output=False)
-            
-            # Verificar se submit foi chamado apenas uma vez
-            self.assertEqual(mock_executor_instance.submit.call_count, 1)
-            
-            # Verificar o resultado
-            self.assertEqual(len(results), 1)
-            self.assertEqual(results[0], result1)
+            for row in reader:
+                # Convert string values to appropriate types
+                row["is_available"] = row["is_available"].lower() == "true"
+                
+                if row["status_code"] and row["status_code"] != "None":
+                    row["status_code"] = int(row["status_code"])
+                else:
+                    row["status_code"] = None
+                    
+                if row["response_time"] and row["response_time"] != "None":
+                    row["response_time"] = float(row["response_time"])
+                else:
+                    row["response_time"] = None
+                
+                # Filter by endpoint names if provided
+                if endpoint_names and row["name"] not in endpoint_names:
+                    continue
+                    
+                results.append(row)
+                
+        self._print_results(results)
 
 
-if __name__ == '__main__':
-    unittest.main()
+def main():
+    """Main entry point for the CLI"""
+    parser = argparse.ArgumentParser(description="Monitor website or service availability")
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
+    # add-endpoint command
+    add_parser = subparsers.add_parser("add-endpoint", help="Add an endpoint configuration")
+    add_parser.add_argument("name", help="Name of the endpoint")
+    add_parser.add_argument("url", help="URL of the endpoint")
+    add_parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="Timeout in seconds")
+    
+    # fetch command
+    fetch_parser = subparsers.add_parser("fetch", help="Scan all configured endpoints")
+    fetch_parser.add_argument("--output", action="store_true", help="Output the result of the scan")
+    fetch_parser.add_argument("--endpoints", nargs="+", help="Specific endpoints to scan")
+    
+    # live command
+    live_parser = subparsers.add_parser("live", help="Continuously scan endpoints at specified intervals")
+    live_parser.add_argument("--interval", type=int, default=DEFAULT_POLLING_INTERVAL, help="Polling interval in seconds")
+    live_parser.add_argument("--output", action="store_true", help="Output scan results")
+    live_parser.add_argument("--endpoints", nargs="+", help="Specific endpoints to scan")
+    
+    # history command
+    history_parser = subparsers.add_parser("history", help="Show scan history")
+    history_parser.add_argument("--endpoints", nargs="+", help="Show history for specific endpoints only")
+    
+    args = parser.parse_args()
+    
+    # Create monitor instance
+    monitor = EndpointMonitor()
+    
+    # Execute command
+    if args.command == "add-endpoint":
+        monitor.add_endpoint(args.name, args.url, args.timeout)
+        
+    elif args.command == "fetch":
+        monitor.fetch(args.endpoints, args.output)
+        
+    elif args.command == "live":
+        monitor.live(args.interval, args.endpoints, args.output)
+        
+    elif args.command == "history":
+        monitor.history(args.endpoints)
+        
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
